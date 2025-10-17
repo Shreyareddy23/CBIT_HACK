@@ -5,6 +5,150 @@ import { useToast } from './ToastContext';
 import { PieChart, Pie, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
 // Types/interfaces
+// Styled Components
+const PhaseTag = styled.span<{ phase: string }>`
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  display: inline-block;
+  background: ${props => {
+    switch (props.phase) {
+      case 'initial': return '#e3f2fd';
+      case 'targeted': return '#fff3e0';
+      case 'complete': return '#e8f5e9';
+      default: return '#f5f5f5';
+    }
+  }};
+  color: ${props => {
+    switch (props.phase) {
+      case 'initial': return '#1976d2';
+      case 'targeted': return '#f57c00';
+      case 'complete': return '#2e7d32';
+      default: return '#616161';
+    }
+  }};
+`;
+
+const AnalysisContainer = styled.div`
+  padding: 20px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  margin-top: 16px;
+`;
+
+const AnalysisSection = styled.div`
+  margin-bottom: 24px;
+`;
+
+const AnalysisTitle = styled.h4`
+  font-size: 18px;
+  color: #2c3e50;
+  margin: 0 0 16px 0;
+`;
+
+const StatGrid = styled.div`
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 16px;
+`;
+
+const StatItem = styled.div`
+  background: white;
+  padding: 16px;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+`;
+
+const StatLabel = styled.div`
+  font-size: 14px;
+  color: #6c757d;
+  margin-bottom: 4px;
+`;
+
+const StatValue = styled.div`
+  font-size: 20px;
+  font-weight: 600;
+  color: #2c3e50;
+`;
+
+const PatternGrid = styled.div`
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 16px;
+`;
+
+const PatternBox = styled.div<{ type: 'warning' | 'info' | 'error' }>`
+  background: ${props => {
+    switch (props.type) {
+      case 'warning': return '#fff3e0';
+      case 'info': return '#e3f2fd';
+      case 'error': return '#ffebee';
+      default: return '#f5f5f5';
+    }
+  }};
+  padding: 16px;
+  border-radius: 8px;
+`;
+
+const PatternLabel = styled.div`
+  font-size: 16px;
+  font-weight: 600;
+  color: #2c3e50;
+  margin-bottom: 12px;
+`;
+
+const PatternItems = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+`;
+
+const ProgressContainer = styled.div`
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  margin: 20px 0;
+`;
+
+const ProgressItem = styled.div`
+  background: white;
+  padding: 16px;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+`;
+
+const ProgressLabel = styled.div`
+  font-size: 14px;
+  color: #6c757d;
+  margin-bottom: 8px;
+`;
+
+const ProgressValue = styled.div<{ improvement?: boolean }>`
+  font-size: 24px;
+  font-weight: 600;
+  color: ${props => props.improvement ? '#2e7d32' : '#2c3e50'};
+`;
+
+const RecommendationsList = styled.ul`
+  list-style: none;
+  padding: 0;
+  margin: 16px 0;
+`;
+
+const RecommendationItem = styled.li`
+  background: white;
+  padding: 12px 16px;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  color: #495057;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+  
+  &:last-child {
+    margin-bottom: 0;
+  }
+`;
+
 interface Session {
   sessionId: string;
   date: Date | string;
@@ -15,6 +159,38 @@ interface Session {
   typingResults?: { word: string; input: string; correct?: boolean; completedAt?: string }[];
   typingResultsMap?: Record<string, string>;
   preferredGame?: string | null;
+  phase?: 'initial' | 'targeted' | 'complete';
+  initialAnalysis?: {
+    problematicLetters: string[];
+    confusionPatterns: Array<{ confuses: string; with: string }>;
+    suggestedWords: string[];
+  };
+  therapistAnalysis?: {
+    summary: {
+      totalWords: number;
+      overallAccuracy: string;
+      completedPhases: string[];
+      averageTimePerWord: string;
+    };
+    dyslexiaPatterns: {
+      letterReversals: string[];
+      visualConfusions: string[];
+      phoneticConfusions: string[];
+      persistentChallenges: string[];
+    };
+    progress: {
+      initialPhaseAccuracy: string;
+      targetedPhaseAccuracy: string;
+      improvement: string;
+      areasImproved: string[];
+      remainingChallenges: string[];
+    };
+    recommendations: {
+      focusAreas: string[];
+      suggestedExercises: string[];
+      nextSteps: string[];
+    };
+  };
 }
 
 interface Child {
@@ -593,11 +769,16 @@ const TherapistDashboard: React.FC = () => {
                         onClick={async (e) => {
                           e.stopPropagation();
                           const choice = childGameSelection[child.username];
+                          const gameType = choice === 'typing' ? 'typing' : 'puzzles';
                           try {
-                            await fetch('http://localhost:5000/api/set-preferred-game', {
+                            const response = await fetch('http://localhost:5000/api/set-preferred-game', {
                               method: 'POST', headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ therapistCode: therapistCode, username: child.username, preferredGame: choice })
+                              body: JSON.stringify({ therapistCode: therapistCode, username: child.username, preferredGame: gameType })
                             });
+                            const data = await response.json();
+                            if (data.success) {
+                              alert(`Successfully assigned ${choice} game to ${child.username}`);
+                            }
                             // For typing: only persist to backend. Child will see the game when they login.
                             if (choice === 'puzzles') {
                               // persist locally for immediate puzzles flow
@@ -902,25 +1083,111 @@ const TherapistDashboard: React.FC = () => {
                                     )}
 
                                   {session.preferredGame === 'typing' && (
-                                    <>
+                                    <React.Fragment>
                                       <SessionSection>
-                                        <SectionTitle>Typing Results (Map)</SectionTitle>
-                                        {session.typingResultsMap && Object.keys(session.typingResultsMap).length > 0 ? (
-                                          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                                            {Object.entries(session.typingResultsMap).map(([orig, typed]) => (
-                                              <div key={orig} style={{ display: 'flex', justifyContent: 'space-between' }}>
-                                                <div><strong>{orig}</strong></div>
-                                                <div style={{ color: '#666' }}>{typed}</div>
-                                              </div>
-                                            ))}
-                                          </div>
+                                        <SectionTitle>
+                                          Typing Assessment 
+                                          {session.phase && (
+                                            <PhaseTag phase={session.phase}>
+                                              {session.phase.toUpperCase()}
+                                            </PhaseTag>
+                                          )}
+                                        </SectionTitle>
+
+                                        {session.therapistAnalysis ? (
+                                          <AnalysisContainer>
+                                          <AnalysisSection>
+                                            <AnalysisTitle>Overall Performance</AnalysisTitle>
+                                            <StatGrid>
+                                                <StatItem>
+                                                  <StatLabel>Accuracy</StatLabel>
+                                                  <StatValue>{session.therapistAnalysis.summary.overallAccuracy}</StatValue>
+                                                </StatItem>
+                                                <StatItem>
+                                                  <StatLabel>Total Words</StatLabel>
+                                                  <StatValue>{session.therapistAnalysis.summary.totalWords}</StatValue>
+                                                </StatItem>
+                                                <StatItem>
+                                                  <StatLabel>Average Time/Word</StatLabel>
+                                                  <StatValue>{session.therapistAnalysis.summary.averageTimePerWord}</StatValue>
+                                                </StatItem>
+                                              </StatGrid>
+                                            </AnalysisSection>
+
+                                            <AnalysisSection>
+                                              <AnalysisTitle>Dyslexia Patterns</AnalysisTitle>
+                                              <PatternGrid>
+                                                {session.therapistAnalysis.dyslexiaPatterns.letterReversals.length > 0 && (
+                                                  <PatternBox type="warning">
+                                                    <PatternLabel>Letter Reversals</PatternLabel>
+                                                    <PatternItems>
+                                                      {session.therapistAnalysis.dyslexiaPatterns.letterReversals.join(', ')}
+                                                    </PatternItems>
+                                                  </PatternBox>
+                                                )}
+                                                {session.therapistAnalysis.dyslexiaPatterns.visualConfusions.length > 0 && (
+                                                  <PatternBox type="info">
+                                                    <PatternLabel>Visual Confusions</PatternLabel>
+                                                    <PatternItems>
+                                                      {session.therapistAnalysis.dyslexiaPatterns.visualConfusions.join(', ')}
+                                                    </PatternItems>
+                                                  </PatternBox>
+                                                )}
+                                                {session.therapistAnalysis.dyslexiaPatterns.phoneticConfusions.length > 0 && (
+                                                  <PatternBox type="error">
+                                                    <PatternLabel>Phonetic Confusions</PatternLabel>
+                                                    <PatternItems>
+                                                      {session.therapistAnalysis.dyslexiaPatterns.phoneticConfusions.join(', ')}
+                                                    </PatternItems>
+                                                  </PatternBox>
+                                                )}
+                                              </PatternGrid>
+                                            </AnalysisSection>
+
+                                            <AnalysisSection>
+                                              <AnalysisTitle>Progress</AnalysisTitle>
+                                              <ProgressContainer>
+                                                <ProgressItem>
+                                                  <ProgressLabel>Initial Phase</ProgressLabel>
+                                                  <ProgressValue>
+                                                    {session.therapistAnalysis.progress.initialPhaseAccuracy}
+                                                  </ProgressValue>
+                                                </ProgressItem>
+                                                <ProgressItem>
+                                                  <ProgressLabel>Targeted Phase</ProgressLabel>
+                                                  <ProgressValue>
+                                                    {session.therapistAnalysis.progress.targetedPhaseAccuracy}
+                                                  </ProgressValue>
+                                                </ProgressItem>
+                                                <ProgressItem>
+                                                  <ProgressLabel>Improvement</ProgressLabel>
+                                                  <ProgressValue 
+                                                    improvement={parseFloat(session.therapistAnalysis.progress.improvement) > 0}
+                                                  >
+                                                    {session.therapistAnalysis.progress.improvement}
+                                                  </ProgressValue>
+                                                </ProgressItem>
+                                              </ProgressContainer>
+                                            </AnalysisSection>
+
+                                            <AnalysisSection>
+                                              <AnalysisTitle>Recommendations</AnalysisTitle>
+                                              <RecommendationsList>
+                                                {session.therapistAnalysis.recommendations.nextSteps.map((step, index) => (
+                                                  <RecommendationItem key={index}>
+                                                    {step}
+                                                  </RecommendationItem>
+                                                ))}
+                                              </RecommendationsList>
+                                            </AnalysisSection>
+                                          </AnalysisContainer>
                                         ) : (
-                                          <div style={{ color: '#666' }}>No typing map available</div>
+                                          <div style={{ color: '#666' }}>Detailed analysis not available</div>
                                         )}
                                       </SessionSection>
 
                                       <SessionSection>
-                                        <SectionTitle>Typing Results (List)</SectionTitle>
+                                        <SectionTitle>Raw Typing Results</SectionTitle>
                                         {session.typingResults && session.typingResults.length > 0 ? (
                                           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                                             {session.typingResults.map((r, i) => (
@@ -934,7 +1201,7 @@ const TherapistDashboard: React.FC = () => {
                                           <div style={{ color: '#666' }}>No typing results recorded</div>
                                         )}
                                       </SessionSection>
-                                    </>
+                                    </React.Fragment>
                                   )}
                                 </SessionBody>
                               )}

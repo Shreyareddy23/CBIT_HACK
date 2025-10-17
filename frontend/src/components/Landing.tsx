@@ -102,7 +102,7 @@ const Landing: React.FC = () => {
           <ErrorMessage>{error}</ErrorMessage>
         ) : (
           <>
-            {/* If there's a preferred story, show reading exercise regardless of game preference */}
+            {/* Handle different game/activity types */}
             {childData.preferredStory ? (
               <>
                 <GameInfo>Reading exercise selected for you by your therapist.</GameInfo>
@@ -114,6 +114,33 @@ const Landing: React.FC = () => {
                   </InstructionList>
                 </Instructions>
                 <PlayButton onClick={() => navigate('/reading-exercise')}>Start Reading Exercise</PlayButton>
+              </>
+            ) : childData.preferredGame === 'typing' ? (
+              <>
+                <GameInfo>Typing game selected for you by your therapist.</GameInfo>
+                <Instructions>
+                  <InstructionTitle>⌨️ Typing Game</InstructionTitle>
+                  <InstructionList>
+                    <li>Practice your typing skills with fun exercises.</li>
+                    <li>Type the words that appear on the screen.</li>
+                  </InstructionList>
+                </Instructions>
+                <PlayButton onClick={() => {
+                  console.log('Starting typing game');
+                  navigate('/typing-game');
+                }}>Start Typing Game</PlayButton>
+              </>
+            ) : childData.preferredGame === 'puzzles' ? (
+              <>
+                <GameInfo>Picture puzzle selected for you by your therapist.</GameInfo>
+                <Instructions>
+                  <InstructionTitle>🧩 Picture Puzzle</InstructionTitle>
+                  <InstructionList>
+                    <li>Solve fun picture puzzles based on your assigned themes.</li>
+                    <li>Learn and have fun with pictures and words.</li>
+                  </InstructionList>
+                </Instructions>
+                <PlayButton onClick={handlePlayPuzzles}>Start Picture Puzzle</PlayButton>
               </>
             ) : (
               <>

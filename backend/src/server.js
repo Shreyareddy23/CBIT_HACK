@@ -28,7 +28,7 @@ app.get('/api/test', (req, res) => {
 });
 
 // MongoDB connection (use 127.0.0.1 for compatibility)
-mongoose.connect("mongodb://localhost:27017/joyverse", {
+mongoose.connect("mongodb+srv://allenkijashwanth16_db_user:xTHedQTpOYIK0nDI@cluster0.fvkiuyx.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0", {
   useNewUrlParser: true,
   useUnifiedTopology: true,
 })
@@ -47,7 +47,6 @@ const Invitation = mongoose.model('Invitation', invitationSchema);
 
 // Therapist Schema
 const therapistSchema = new mongoose.Schema({
-
   username: { type: String, required: true, unique: true },
   password: { type: String, required: true },
   code: { type: String, unique: true },
@@ -71,18 +70,55 @@ const therapistSchema = new mongoose.Schema({
               emotionsDuring: [String],
             },
           ],
-              typingResults: [
-                {
-                  word: String,
-                  input: String,
-                  correct: Boolean,
-                  completedAt: { type: Date, default: Date.now }
-                }
-              ],
-              typingResultsMap: { type: Object, default: {} },
-              preferredGame: { type: String, default: null },
-              preferredStory: { type: String, default: null },
-              readingRecordings: { type: Array, default: [] },
+          typingResults: [
+            {
+              word: String,
+              input: String,
+              correct: Boolean,
+              completedAt: { type: Date, default: Date.now }
+            }
+          ],
+          typingAssessmentWords: { type: [String], default: [] },
+          currentWordIndex: { type: Number, default: 0 },
+          phase: { type: String, enum: ['initial', 'targeted', 'complete'], default: 'initial' },
+          initialAnalysis: {
+            problematicLetters: [String],
+            confusionPatterns: [{
+              confuses: String,
+              with: String
+            }],
+            suggestedWords: [String]
+          },
+          therapistAnalysis: {
+            summary: {
+              totalWords: Number,
+              overallAccuracy: String,
+              completedPhases: [String],
+              averageTimePerWord: String
+            },
+            dyslexiaPatterns: {
+              letterReversals: [String],
+              visualConfusions: [String],
+              phoneticConfusions: [String],
+              persistentChallenges: [String]
+            },
+            progress: {
+              initialPhaseAccuracy: String,
+              targetedPhaseAccuracy: String,
+              improvement: String,
+              areasImproved: [String],
+              remainingChallenges: [String]
+            },
+            recommendations: {
+              focusAreas: [String],
+              suggestedExercises: [String],
+              nextSteps: [String]
+            }
+          },
+          typingResultsMap: { type: Object, default: {} },
+          preferredGame: { type: String, default: null },
+          preferredStory: { type: String, default: null },
+          readingRecordings: { type: Array, default: [] },
         },
       ],
       currentAssignedThemes: { type: [String], default: [] },
@@ -408,7 +444,7 @@ function getGeminiModel() {
 
 // ========== NEW TYPING ENDPOINTS - ADD THESE ==========
 
-// 1. Generate initial word for new typing session
+// 1. Generate initial word set for new typing session
 app.post('/api/typing/generate-initial-word', async (req, res) => {
   try {
     const { sessionId, username, therapistCode } = req.body;
@@ -417,80 +453,167 @@ app.post('/api/typing/generate-initial-word', async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    const model = getGeminiModel();
-    
-    const prompt = `You are helping a dyslexic child practice typing. Generate ONE simple word from common categories (fruits, animals, colors, objects) that is:
-- 3-5 letters long
-- Easy to spell
-- Commonly known by children
-- Suitable for dyslexic children (avoid confusing letter combinations like 'b/d', 'p/q')
+    // Initial assessment words targeting different dyslexia challenges
+    const initialWords = [
+      'cat',   // Simple CVC pattern
+      'blue',  // Consonant blend
+      'book',  // Double letters
+      'they',  // Digraph 'th' and irregular spelling
+      'said'   // Irregular sight word
+    ];
 
-Return ONLY the word in lowercase, nothing else. No punctuation, no explanations.`;
+    // Store these words in the session for tracking
+    const therapist = await Therapist.findOne({ 
+      code: therapistCode,
+      'children.username': username,
+      'children.sessions.sessionId': sessionId
+    });
 
-    const result = await model.generateContent(prompt);
-    const word = result.response.text().trim().toLowerCase().replace(/[^a-z]/g, '');
+    if (!therapist) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
 
-    console.log('Generated initial word:', word);
+    const childIndex = therapist.children.findIndex(c => c.username === username);
+    const sessionIndex = therapist.children[childIndex].sessions.findIndex(s => s.sessionId === sessionId);
+
+    // Add initial words to session for tracking
+    therapist.children[childIndex].sessions[sessionIndex].typingAssessmentWords = initialWords;
+    therapist.children[childIndex].sessions[sessionIndex].currentWordIndex = 0;
+    therapist.children[childIndex].sessions[sessionIndex].phase = 'initial';
+
+    await therapist.save();
+
+    console.log('Starting initial assessment with words:', initialWords);
 
     res.json({ 
       success: true, 
-      word: word,
-      isInitial: true 
+      word: initialWords[0],
+      remainingWords: initialWords.slice(1),
+      phase: 'initial'
     });
   } catch (error) {
-    console.error('Error generating initial word:', error);
-    res.status(500).json({ error: 'Failed to generate word', details: error.message });
+    console.error('Error generating initial words:', error);
+    res.status(500).json({ error: 'Failed to generate words', details: error.message });
   }
 });
 
 // 2. Generate next word based on typing history (ADAPTIVE)
-// Adaptive next word generation (no repeats, focus on problem letters, max 5 letters)
 app.post('/api/typing/generate-next-word', async (req, res) => {
   try {
     const { sessionId, username, therapistCode, typingHistory } = req.body;
     
-    if (!sessionId || !username || !therapistCode || !typingHistory) {
+    if (!sessionId || !username || !therapistCode) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    const model = getGeminiModel();
-    
-    // List of words already given
-    const usedWords = typingHistory.map(item => item.word.toLowerCase()).join(', ');
-
-    // Prepare typing history for analysis
-    const historyText = typingHistory.map(item => 
-      `Word: "${item.word}", Typed: "${item.input}", Correct: ${item.correct}`
-    ).join('\n');
-
-    const prompt = `You are an AI assistant helping a dyslexic child improve typing skills.
-
-TYPING HISTORY:
-${historyText}
-
-Avoid repeating any of these words: ${usedWords}
-
-Analyze the mistakes and identify which letters the child is struggling with (common dyslexic patterns: b/d, p/q, m/n, u/n, w/m, etc.).
-
-Based on this analysis, generate ONE new word that:
-1. Contains letters the child struggled with
-2. Is simple and age-appropriate
-3. Helps diagnose specific letter confusion patterns
-4. Has a maximum of 5 letters
-5. Is NOT one of the words already given
-
-Return ONLY the word in lowercase, nothing else. No punctuation, no explanations.`;
-
-    const result = await model.generateContent(prompt);
-    const word = result.response.text().trim().toLowerCase().replace(/[^a-z]/g, '');
-
-    console.log('Generated adaptive word:', word, 'based on history:', typingHistory.length, 'attempts');
-
-    res.json({ 
-      success: true, 
-      word: word,
-      isAdaptive: true 
+    // Get current session data
+    const therapist = await Therapist.findOne({ 
+      code: therapistCode,
+      'children.username': username,
+      'children.sessions.sessionId': sessionId
     });
+
+    if (!therapist) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    const childIndex = therapist.children.findIndex(c => c.username === username);
+    const sessionIndex = therapist.children[childIndex].sessions.findIndex(s => s.sessionId === sessionId);
+    const session = therapist.children[childIndex].sessions[sessionIndex];
+
+    if (session.phase === 'initial') {
+      // Still in initial assessment phase
+      const nextIndex = (session.currentWordIndex || 0) + 1;
+      const initialWords = session.typingAssessmentWords || [];
+
+      if (nextIndex >= initialWords.length) {
+        // Initial phase complete, analyze results and generate targeted words
+        const model = getGeminiModel();
+        
+        // Analyze typing patterns from initial phase
+        const analysisPrompt = `Analyze these typing attempts for a dyslexic child and identify patterns:
+${JSON.stringify(typingHistory, null, 2)}
+
+Focus on:
+1. Common dyslexic patterns (b/d, p/q, m/n, u/n, w/m)
+2. Letter reversals and inversions
+3. Phonetic confusion patterns
+4. Visual similarity confusions
+
+Return a JSON object:
+{
+  "problematicLetters": ["list", "of", "difficult", "letters"],
+  "confusionPatterns": [{"confuses": "b", "with": "d"}, etc],
+  "suggestedWords": ["five", "targeted", "practice", "words", "here"]
+}
+
+Make suggestedWords:
+- Target identified problem areas
+- Simple and familiar
+- Max 5 letters each
+- Gradually increasing difficulty`;
+
+        const result = await model.generateContent(analysisPrompt);
+        const analysis = JSON.parse(result.response.text());
+
+        // Store analysis and new targeted words
+        session.phase = 'targeted';
+        session.initialAnalysis = analysis;
+        session.typingAssessmentWords = analysis.suggestedWords;
+        session.currentWordIndex = 0;
+
+        await therapist.save();
+
+        return res.json({
+          success: true,
+          word: analysis.suggestedWords[0],
+          remainingWords: analysis.suggestedWords.slice(1),
+          phase: 'targeted',
+          analysis: {
+            problematicLetters: analysis.problematicLetters,
+            confusionPatterns: analysis.confusionPatterns
+          }
+        });
+      }
+
+      // Continue with initial assessment
+      session.currentWordIndex = nextIndex;
+      await therapist.save();
+
+      return res.json({
+        success: true,
+        word: initialWords[nextIndex],
+        remainingWords: initialWords.slice(nextIndex + 1),
+        phase: 'initial'
+      });
+
+    } else if (session.phase === 'targeted') {
+      // In targeted practice phase
+      const nextIndex = (session.currentWordIndex || 0) + 1;
+      const targetedWords = session.typingAssessmentWords || [];
+
+      if (nextIndex >= targetedWords.length) {
+        // Assessment complete
+        return res.json({
+          success: true,
+          complete: true,
+          phase: 'complete',
+          analysis: session.initialAnalysis
+        });
+      }
+
+      session.currentWordIndex = nextIndex;
+      await therapist.save();
+
+      return res.json({
+        success: true,
+        word: targetedWords[nextIndex],
+        remainingWords: targetedWords.slice(nextIndex + 1),
+        phase: 'targeted',
+        analysis: session.initialAnalysis
+      });
+    }
+
   } catch (error) {
     console.error('Error generating next word:', error);
     res.status(500).json({ error: 'Failed to generate word', details: error.message });
@@ -1461,6 +1584,100 @@ app.post('/api/save-reading-audio', async (req, res) => {
   } catch (err) {
     console.error('Error saving reading audio', err);
     res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get detailed typing analysis for therapists
+app.get('/api/typing/therapist-analysis/:sessionId', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const { therapistCode } = req.query;
+
+    if (!sessionId || !therapistCode) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const therapist = await Therapist.findOne({ code: therapistCode });
+    if (!therapist) {
+      return res.status(404).json({ error: 'Therapist not found' });
+    }
+
+    // Find the session across all children
+    let targetSession = null;
+    let targetChild = null;
+
+    for (const child of therapist.children) {
+      const session = child.sessions.find(s => s.sessionId === sessionId);
+      if (session) {
+        targetSession = session;
+        targetChild = child;
+        break;
+      }
+    }
+
+    if (!targetSession) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    // Compile comprehensive analysis
+    const model = getGeminiModel();
+    const analysisPrompt = `Analyze these typing results for a dyslexic child and provide a detailed report:
+
+Initial Assessment Phase:
+${JSON.stringify(targetSession.typingResults.filter(r => targetSession.phase === 'initial'), null, 2)}
+
+Targeted Practice Phase:
+${JSON.stringify(targetSession.typingResults.filter(r => targetSession.phase === 'targeted'), null, 2)}
+
+Initial Analysis:
+${JSON.stringify(targetSession.initialAnalysis || {}, null, 2)}
+
+Generate a comprehensive JSON analysis:
+{
+  "summary": {
+    "totalWords": number,
+    "overallAccuracy": "percentage",
+    "completedPhases": ["initial", "targeted"],
+    "averageTimePerWord": "seconds"
+  },
+  "dyslexiaPatterns": {
+    "letterReversals": ["list of examples"],
+    "visualConfusions": ["list with frequencies"],
+    "phoneticConfusions": ["list with frequencies"],
+    "persistentChallenges": ["key areas"]
+  },
+  "progress": {
+    "initialPhaseAccuracy": "percentage",
+    "targetedPhaseAccuracy": "percentage",
+    "improvement": "percentage",
+    "areasImproved": ["list"],
+    "remainingChallenges": ["list"]
+  },
+  "recommendations": {
+    "focusAreas": ["specific areas"],
+    "suggestedExercises": ["exercise types"],
+    "nextSteps": ["action items"]
+  }
+}`;
+
+    const result = await model.generateContent(analysisPrompt);
+    const detailedAnalysis = JSON.parse(result.response.text());
+
+    // Save the detailed analysis
+    targetSession.therapistAnalysis = detailedAnalysis;
+    await therapist.save();
+
+    res.json({
+      success: true,
+      childName: targetChild.username,
+      sessionDate: targetSession.date,
+      phase: targetSession.phase,
+      analysis: detailedAnalysis
+    });
+
+  } catch (error) {
+    console.error('Error generating therapist analysis:', error);
+    res.status(500).json({ error: 'Failed to generate analysis', details: error.message });
   }
 });
 

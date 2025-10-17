@@ -2,19 +2,34 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import styled from 'styled-components';
 
-const TOTAL_WORDS = 5; // Total words to practice
+const TOTAL_WORDS = 5; // Total words per set
+const WORD_DISPLAY_DELAY = 1000; // Time to show word (ms)
+const FEEDBACK_DELAY = 1500; // Time to show feedback (ms)
+const AI_THINKING_DELAY = 2000; // Minimum time to show AI thinking (ms)
+
+interface TypingResult {
+  word: string;
+  input: string;
+  correct: boolean;
+  timeSpent: number; // Time spent typing in ms
+}
 
 const TypingGame: React.FC = () => {
   const [currentWord, setCurrentWord] = useState('');
   const [input, setInput] = useState('');
-  const [results, setResults] = useState<Array<{ word: string; input: string; correct: boolean }>>([]);
+  const [results, setResults] = useState<TypingResult[]>([]);
   const [wordCount, setWordCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [difficulty, setDifficulty] = useState<'easy' | 'medium' | 'hard'>('easy');
+  const [accuracy, setAccuracy] = useState(100);
+  const [totalMistakes, setTotalMistakes] = useState(0);
   const navigate = useNavigate();
   const [childData, setChildData] = useState<{ username: string; therapistCode: string; sessionId: string } | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [isGeneratingWord, setIsGeneratingWord] = useState(false);
+  const [startTime, setStartTime] = useState<number | null>(null);
+  const [phase, setPhase] = useState<'initial' | 'analyzing' | 'targeted'>('initial');
   const [analysis, setAnalysis] = useState<{
     problematicLetters: string[];
     confusionPatterns: Array<{ confuses: string; with: string }>;
@@ -32,8 +47,8 @@ const TypingGame: React.FC = () => {
       setChildData(parsed);
 
       // Check if child's preferred game is typing
-      const pref = sessionStorage.getItem(`selectedGame_${parsed.username}`) || sessionStorage.getItem('selectedGame');
-      if (pref === 'puzzles') {
+      if (parsed.preferredGame !== 'typing') {
+        console.log('Redirecting: not assigned to typing game');
         navigate('/landing');
         return;
       }
@@ -78,8 +93,48 @@ const TypingGame: React.FC = () => {
     
     setIsGeneratingWord(true);
     setError(null);
+    setCurrentWord(''); // Clear current word while loading
     
     try {
+      // Calculate accuracy to adjust difficulty
+      const accuracy = results.length > 0 
+        ? (results.filter(r => r.correct).length / results.length) * 100 
+        : 100;
+      setAccuracy(accuracy);
+      
+      // Adjust difficulty based on accuracy
+      if (accuracy >= 90 && difficulty !== 'hard') {
+        setDifficulty('hard');
+      } else if (accuracy >= 70 && accuracy < 90 && difficulty !== 'medium') {
+        setDifficulty('medium');
+      } else if (accuracy < 70 && difficulty !== 'easy') {
+        setDifficulty('easy');
+      }
+      
+      // Minimum delay to show AI thinking animation
+      const startTime = Date.now();
+      
+      // Use targeted words if available in session storage
+      const targetedWordsStr = sessionStorage.getItem(`targetedWords_${childData.sessionId}`);
+      if (targetedWordsStr && phase === 'targeted') {
+        const targetedWords = JSON.parse(targetedWordsStr);
+        const currentIndex = parseInt(sessionStorage.getItem(`targetedWordIndex_${childData.sessionId}`) || '0');
+        
+        if (currentIndex < targetedWords.length) {
+          const elapsed = Date.now() - startTime;
+          if (elapsed < WORD_DISPLAY_DELAY) {
+            await new Promise(resolve => setTimeout(resolve, WORD_DISPLAY_DELAY - elapsed));
+          }
+          
+          setCurrentWord(targetedWords[currentIndex]);
+          sessionStorage.setItem(`targetedWordIndex_${childData.sessionId}`, (currentIndex + 1).toString());
+          setIsGeneratingWord(false);
+          setStartTime(Date.now());
+          return;
+        }
+      }
+
+      // Get next word from server for initial phase
       const response = await fetch('http://localhost:5000/api/typing/generate-next-word', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -87,7 +142,8 @@ const TypingGame: React.FC = () => {
           sessionId: childData.sessionId,
           username: childData.username,
           therapistCode: childData.therapistCode,
-          typingHistory: results
+          typingHistory: results,
+          phase: phase
         })
       });
 
@@ -110,30 +166,183 @@ const TypingGame: React.FC = () => {
 
   const handleSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!currentWord || input.trim() === '') return;
+    if (!currentWord || input.trim() === '' || !startTime) return;
 
-    const correct = input.trim().toLowerCase() === currentWord.toLowerCase();
-    const entry = { word: currentWord, input: input.trim(), correct };
+    const endTime = Date.now();
+    const timeSpent = endTime - startTime;
+    const userWord = input.trim().toLowerCase();
+    const targetWord = currentWord.toLowerCase();
+    const correct = userWord === targetWord;
+    
+    // Calculate mistakes in this word
+    let wordMistakes = 0;
+    for (let i = 0; i < Math.max(userWord.length, targetWord.length); i++) {
+      if (userWord[i] !== targetWord[i]) {
+        wordMistakes++;
+      }
+    }
+    setTotalMistakes(prev => prev + wordMistakes);
+    
+    // Calculate current accuracy
+    const newAccuracy = Math.max(0, Math.min(100, (1 - (wordMistakes / targetWord.length)) * 100));
+    setAccuracy(prev => (prev + newAccuracy) / 2); // Rolling average
+    
+    const entry = { 
+      word: currentWord, 
+      input: userWord,
+      correct,
+      timeSpent,
+      mistakes: wordMistakes
+    };
     
     const newResults = [...results, entry];
     setResults(newResults);
     setInput('');
     setWordCount(wordCount + 1);
 
-    // Show feedback
+    // Show detailed feedback with improved visualization
     if (correct) {
-      setMessage('✓ Correct!');
+      setMessage(`✓ Perfect! Time: ${(timeSpent / 1000).toFixed(1)}s\nAccuracy: ${accuracy.toFixed(1)}%`);
     } else {
-      setMessage(`✗ Not quite. The word was: ${currentWord}`);
+      const inputWord = input.trim().toLowerCase();
+      let feedback = `The word was: ${currentWord}\n`;
+      
+      // Create visual comparison
+      let comparison = '';
+      const maxLen = Math.max(inputWord.length, currentWord.length);
+      
+      for (let i = 0; i < maxLen; i++) {
+        if (i < inputWord.length && i < currentWord.length) {
+          if (inputWord[i] === currentWord[i].toLowerCase()) {
+            comparison += '✓';
+          } else {
+            comparison += '✗';
+          }
+        } else {
+          comparison += '✗';
+        }
+      }
+      
+      feedback += `Your typing: ${inputWord}\n`;
+      feedback += `Accuracy:   ${comparison}\n\n`;
+      
+      // Add specific learning tips
+      if (inputWord.length !== currentWord.length) {
+        feedback += `Tip: Pay attention to word length. `;
+        feedback += inputWord.length < currentWord.length ? 'You missed some letters.' : 'You added extra letters.';
+      } else {
+        const diffPositions = [];
+        for (let i = 0; i < inputWord.length; i++) {
+          if (inputWord[i] !== currentWord[i].toLowerCase()) {
+            diffPositions.push({ pos: i, typed: inputWord[i], expected: currentWord[i] });
+          }
+        }
+        if (diffPositions.length > 0) {
+          feedback += `Focus on: ${diffPositions.map(d => 
+            `'${d.expected}' (typed '${d.typed}')`
+          ).join(', ')}`;
+        }
+      }
+      
+      setMessage(feedback);
     }
 
-    // Clear feedback after 1.5 seconds
-    setTimeout(() => setMessage(null), 1500);
+    // Clear feedback after delay
+    setTimeout(() => setMessage(null), FEEDBACK_DELAY);
 
     // Check if we've reached the total word count
     if (wordCount + 1 >= TOTAL_WORDS) {
-      // Save all results and finish
-      await saveResults(newResults);
+      if (phase === 'initial' && childData) {
+        // Show transition message
+        setMessage("Analyzing your typing patterns...");
+        setPhase('analyzing');
+        
+        try {
+          // Artificial delay for analysis animation
+          await new Promise(resolve => setTimeout(resolve, AI_THINKING_DELAY));
+          
+          const analysisResp = await fetch('http://localhost:5000/api/analyze-typing-results', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              therapistCode: childData.therapistCode,
+              username: childData.username,
+              sessionId: childData.sessionId,
+              results: newResults
+            })
+          });
+
+          const analysisData = await analysisResp.json();
+          if (analysisData.success) {
+            setAnalysis(analysisData.analysis);
+            
+            // Show analysis results
+            let feedbackMessage = "First set completed!\n\n";
+            if (analysisData.analysis.problematicLetters.length > 0) {
+              feedbackMessage += `Letters to focus on: ${analysisData.analysis.problematicLetters.join(', ')}\n`;
+            }
+            feedbackMessage += "\nLet's practice with some targeted words...";
+            setMessage(feedbackMessage);
+            
+            // Get targeted words based on analysis
+            const targetedResp = await fetch('http://localhost:5000/api/typing/generate-targeted-words', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                therapistCode: childData.therapistCode,
+                username: childData.username,
+                sessionId: childData.sessionId,
+                analysis: analysisData.analysis
+              })
+            });
+            
+            const targetedData = await targetedResp.json();
+            if (targetedData.success) {
+              // Show the targeted words approach
+              await new Promise(resolve => setTimeout(resolve, FEEDBACK_DELAY));
+              
+              // Store targeted words in session storage
+              sessionStorage.setItem(`targetedWords_${childData.sessionId}`, JSON.stringify(targetedData.words));
+              sessionStorage.setItem(`targetedWordIndex_${childData.sessionId}`, '0');
+              
+              // Reset for targeted practice set
+              setResults(prevResults => {
+                sessionStorage.setItem(`firstSetResults_${childData.sessionId}`, JSON.stringify(prevResults));
+                return [];
+              });
+              
+              setWordCount(0);
+              setPhase('targeted');
+              setIsGeneratingWord(true);
+              
+              // Delay before showing first targeted word
+              await new Promise(resolve => setTimeout(resolve, WORD_DISPLAY_DELAY));
+              setCurrentWord(targetedData.words[0]);
+              setIsGeneratingWord(false);
+              setStartTime(Date.now());
+            }
+          }
+        } catch (err) {
+          console.error('Error in analysis phase:', err);
+          setError('Failed to analyze results and generate targeted words');
+        }
+      } else if (phase === 'targeted' && childData) {
+        // Show completion message
+        setMessage("Completing final analysis...");
+        
+        // Add artificial delay for analysis
+        await new Promise(resolve => setTimeout(resolve, AI_THINKING_DELAY));
+        
+        // Second set complete: combine both sets and save
+        const firstSetResults = JSON.parse(sessionStorage.getItem(`firstSetResults_${childData.sessionId}`) || '[]');
+        const allResults = [...firstSetResults, ...newResults];
+        await saveResults(allResults);
+        
+        // Clean up session storage
+        sessionStorage.removeItem(`targetedWords_${childData.sessionId}`);
+        sessionStorage.removeItem(`targetedWordIndex_${childData.sessionId}`);
+        sessionStorage.removeItem(`firstSetResults_${childData.sessionId}`);
+      }
     } else {
       // Generate next word after a brief delay
       setTimeout(() => {
@@ -151,7 +360,9 @@ const TypingGame: React.FC = () => {
         therapistCode: childData.therapistCode,
         username: childData.username,
         sessionId: childData.sessionId,
-        results: finalResults
+        results: finalResults,
+        analysis: analysis, // Include the analysis from both sets
+        isComplete: true // Indicate this is the complete assessment
       };
       
       const resp = await fetch('http://localhost:5000/api/save-typing-results', {
@@ -163,17 +374,20 @@ const TypingGame: React.FC = () => {
       const data = await resp.json();
       
       if (resp.ok) {
-        setMessage('🎉 Typing game completed! Results saved.');
-        
-        // Store AI analysis for display
-        if (data.autoAnalysis) {
-          setAnalysis(data.autoAnalysis);
-          console.log('AI Analysis:', data.autoAnalysis);
+        // Show final analysis with improvement comparison
+        if (data.finalAnalysis) {
+          setAnalysis(data.finalAnalysis);
+          setMessage(
+            '🎉 Assessment complete!\n' + 
+            'Your results have been saved and will help your therapist understand your progress.'
+          );
+        } else {
+          setMessage('🎉 Assessment complete! Results saved.');
         }
         
         setTimeout(() => {
           navigate('/landing');
-        }, 2000);
+        }, 3000);
       } else {
         setMessage(data.error || 'Failed to save results');
         setLoading(false);
